@@ -1,0 +1,20 @@
+# === Core pipeline runtime dependencies =====================================
+# Only direct imports are listed here. Transitive dependencies are resolved
+# automatically by pip and should NOT be pinned in this file.
+
+faster-whisper==1.2.1
+requests==2.34.2
+psutil==7.2.2
+numpy==2.2.6
+nvidia-ml-py==12.560.30
+
+# === faster-whisper indirect deps not auto-resolved on aarch64 ==============
+huggingface_hub==1.14.0   # model download from HuggingFace Hub
+tokenizers==0.22.2        # HF tokenizer used by faster-whisper
+
+# === CTranslate2 — compiled from source on Jetson Orin =====================
+# Do NOT install via pip on aarch64+CUDA; use compile_ctranslate2.sh instead.
+# The local build is registered as an editable install pointing to:
+#   CTranslate2_source/python/
+# Uncomment the line below ONLY if you have NOT already run compile_ctranslate2.sh:
+# ctranslate2 @ file:///home/ilya/PycharmProjects/VideoTranslator/CTranslate2_source/python
