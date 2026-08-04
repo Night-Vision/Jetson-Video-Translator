@@ -222,6 +222,9 @@ class AudioDubber:
 
         dub_inputs: list[str] = ["-i", silent_base]   # [0:a] is the silent anchor
         filter_parts: list[str] = []
+        kept: list[Segment] = []
+        kept_idx: list[int] = []
+        n_total = len(segments)
 
         for i, seg in enumerate(segments):
             out_file = f"/dev/shm/seg_{i}.wav"
@@ -236,8 +239,21 @@ class AudioDubber:
                 logger.warning("Could not read WAV duration for %s: %s", out_file, exc)
                 actual_duration = target_duration
 
-            input_idx = i + 1          # offset because silent_base is input 0
+            # Piper emits a ~0.2 s all-zero WAV for text it can't vocalize (empty,
+            # whitespace, "♪", "...").  After silence-trim it measures ~0 s: mixing
+            # that silence while still ducking the original would blank the window.
+            # Drop the segment — no dub, and no ducking (original audio stays).
+            if actual_duration < 0.05:
+                logger.warning(
+                    "Dropping seg %d: TTS is silent (%.3f s) — keeping original audio",
+                    i, actual_duration,
+                )
+                continue
+
+            input_idx = len(dub_inputs) // 2   # silent_base is input 0
             dub_inputs.extend(["-i", out_file])
+            kept.append(seg)
+            kept_idx.append(i)
 
             # Normalize sample rate BEFORE any time-sensitive filters
             rate_filter = f"aresample={sample_rate}:async=1:first_pts=0,"
@@ -256,8 +272,11 @@ class AudioDubber:
                 f"adelay=delays={delay_ms}|{delay_ms}:all=1[a{i}];"
             )
 
-        n = len(segments)
-        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in range(n))
+        # Drop silent-TTS segments from the mux ducking too (they produce no dub),
+        # so the original audio stays in those windows.
+        segments[:] = kept
+        n = len(kept_idx)
+        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in kept_idx)
         # duration=first forces output length == silent_base length == video_duration
         filter_complex = (
             "".join(filter_parts)
@@ -279,7 +298,7 @@ class AudioDubber:
                 check=True,
             )
         finally:
-            for i in range(n):
+            for i in range(n_total):
                 for f in (f"/dev/shm/seg_{i}.wav", f"/dev/shm/seg_{i}_trimmed.wav"):
                     try:
                         os.remove(f)
@@ -337,24 +356,23 @@ class AudioDubber:
     def _build_tempo_filter(actual: float, target: float) -> str:
         """Return a chained atempo filter string clamped to ffmpeg's 0.5–2.0 range.
 
-        Speeds up (ratio > 1.0) when TTS is longer than the time slot.
-        Slows down (ratio < 1.0) when TTS is shorter — eliminates dead air.
+        Only speeds up (ratio > 1.0) when TTS is longer than the time slot, so a
+        long TTS never spills into the next window.  Never slows down: Whisper
+        segment windows include natural trailing pause, so stretching the trimmed
+        TTS to fill them distorts the speech rate and desyncs the dub from the
+        video.  Short TTS simply ends early at its natural pace.
         """
         ratio = actual / target
+        if ratio <= 1.0:
+            return ""
         filters: list[str] = []
-        if ratio > 1.0:
-            # Speed up — chain atempo=2.0 for ratios above 2.0
-            while ratio > 2.0:
-                filters.append("atempo=2.0")
-                ratio /= 2.0
-        elif ratio < 1.0:
-            # Slow down — chain atempo=0.5 for ratios below 0.5
-            while ratio < 0.5:
-                filters.append("atempo=0.5")
-                ratio /= 0.5
+        # Speed up — chain atempo=2.0 for ratios above 2.0
+        while ratio > 2.0:
+            filters.append("atempo=2.0")
+            ratio /= 2.0
         if abs(ratio - 1.0) > 1e-4:
             filters.append(f"atempo={ratio:.3f}")
-        return ",".join(filters) if filters else ""
+        return ",".join(filters)
 
     @staticmethod
     def _cleanup_dub_track(dub_track: str) -> None:
