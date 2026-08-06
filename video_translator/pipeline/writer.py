@@ -24,11 +24,12 @@ class SubtitleWriter:
     def __init__(self, config: Config) -> None:
         self.config = config
 
-    def write(self, segment_iter) -> None:
+    def write(self, segment_iter) -> bool:
+        """Serialize translated Segments to a subtitle file; False when empty."""
         segments: list[Segment] = list(segment_iter)
         if not segments:
             logger.info("No segments to write.")
-            return
+            return False
 
         fmt = self.config.output_format
         output_path = f"{self.config.output_subtitles}.{fmt}"
@@ -44,6 +45,7 @@ class SubtitleWriter:
 
         writer_fn(segments, output_path)
         logger.info("Subtitles written to %s", output_path)
+        return True
 
     # ── Format implementations ───────────────────────────────────────────────
 

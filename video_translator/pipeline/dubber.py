@@ -15,6 +15,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger("video_translator.dubber")
 
 # TTS model filenames per target language and speaker gender.
+#
+# Only Russian ships distinct male/female voices in this repo
+# (ru_RU-irina-medium.onnx / ru_RU-dmitri-medium.onnx).  English, Spanish,
+# French, and German reuse a single voice for both genders — the female/male
+# keys are aliases — until additional Piper voices are added to models/.
 _TTS_MODELS: dict[str, dict[str, str]] = {
     "English": {"female": "en_US-lessac-medium.onnx",   "male": "en_US-lessac-medium.onnx"},
     "Russian": {"female": "ru_RU-irina-medium.onnx",    "male": "ru_RU-dmitri-medium.onnx"},
@@ -76,11 +81,12 @@ class AudioDubber:
             logger.warning("Could not read video audio rate: %s", exc)
             return None
 
-    def dub(self, segment_iter) -> None:
+    def dub(self, segment_iter) -> bool:
+        """Generate the dubbed video; return False when there is nothing to dub."""
         segments: list[Segment] = list(segment_iter)
         if not segments:
             logger.info("No segments to dub.")
-            return
+            return False
 
         logger.info("Generating dubbed audio & synchronizing...")
         video_duration = self._get_video_duration()
@@ -90,11 +96,12 @@ class AudioDubber:
 
         sample_rate = self._get_video_audio_rate() or self._get_model_sample_rate()
 
-        dub_track = self._mix_segments_to_track(segments, sample_rate)
+        dub_track = self._mix_segments_to_track(segments, sample_rate, video_duration)
         try:
             self._mux_final_video(segments, dub_track)
         finally:
             self._cleanup_dub_track(dub_track)
+        return True
 
     # ── Step helpers ─────────────────────────────────────────────────────────
 
@@ -165,6 +172,12 @@ class AudioDubber:
         lang_models = _TTS_MODELS.get(self.config.target_lang, _DEFAULT_MODELS)
         model_name = lang_models.get(gender, _DEFAULT_MODELS[gender])
         model_path_candidate = os.path.join(self.config.tts_models_dir, model_name)
+        if not os.path.exists(model_path_candidate):
+            logger.warning(
+                "Piper voice %s not found in %s — passing bare filename to Piper; "
+                "install the voice under models/ for %s dubbing.",
+                model_name, self.config.tts_models_dir, self.config.target_lang,
+            )
         model_path = model_path_candidate if os.path.exists(model_path_candidate) else model_name
 
         # Piper accepts newline-delimited JSON objects: {"text": ..., "output_file": ...}
@@ -207,12 +220,18 @@ class AudioDubber:
             except OSError:
                 pass
 
-    def _mix_segments_to_track(self, segments: list[Segment], sample_rate: int) -> str:
+    def _mix_segments_to_track(
+        self, segments: list[Segment], sample_rate: int, video_duration: float
+    ) -> str:
         """Build one ffmpeg filter_complex that delays + tempo-adjusts all segment WAVs."""
         logger.info("Compiling final audio track...")
 
+        # A zero duration means the earlier ffprobe failed.  Do not build a
+        # `-t 0` silent base and emit an empty/`-t 0` track: fail loudly instead.
+        if video_duration <= 0.0:
+            raise RuntimeError("Could not determine video duration — aborting dubbing")
+
         # ── Silent base track anchors the output to exact video duration ──
-        video_duration = self._get_video_duration()
         silent_base = "/dev/shm/silent_base.wav"
         subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi",

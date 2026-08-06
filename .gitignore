@@ -20,6 +20,7 @@ dist/
 .cursor/
 *.swp
 *.swo
+reasonix.toml
 
 # Large Model Weights & Dynamic Downloads
 models/nllb/

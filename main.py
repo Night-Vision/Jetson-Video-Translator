@@ -36,27 +36,53 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _cleanup(config: Config) -> None:
-    """Remove intermediate files from the RAM disk on exit."""
-    import os  # noqa: PLC0415
+def _ramdisk_paths(config: Config) -> list[str]:
+    """All intermediate paths the pipeline may leave on the RAM disk.
+
+    Includes yt-dlp partial-stream artifacts (e.g. ``input_vid.f399.mp4``,
+    ``input_vid.f251.webm``, ``*.part``, ``*.ytdl``) that survive an
+    interrupted download while ``bestvideo+bestaudio`` streams are being
+    merged.  Artifacts are derived from the tmp_video basename so the sweep
+    works for any configured path.
+    """
     import glob  # noqa: PLC0415
-    logger.info("Cleaning up intermediate /dev/shm/ files...")
-    
-    # Clean up specific temp files and glob segment files
-    paths_to_remove = [
+    import os  # noqa: PLC0415
+
+    shm_dir = os.path.dirname(config.tmp_video) or "/dev/shm"
+    prefix = os.path.basename(config.tmp_video).rsplit(".", 1)[0]
+
+    paths = [
         config.tmp_video,
         config.tmp_audio,
         config.tmp_segments,
         "/dev/shm/dub_track_main.wav",
+        "/dev/shm/silent_base.wav",
     ]
-    paths_to_remove.extend(glob.glob("/dev/shm/seg_*.wav"))
-    
+    # yt-dlp per-stream temp files + in-progress fragments for this video
+    paths.extend(glob.glob(os.path.join(shm_dir, f"{prefix}.f*")))
+    paths.extend(glob.glob(os.path.join(shm_dir, f"{prefix}.*.part")))
+    paths.extend(glob.glob(os.path.join(shm_dir, f"{prefix}.*.ytdl")))
+    # Per-segment Piper outputs (also removed by the dubber on success)
+    paths.extend(glob.glob(os.path.join(shm_dir, "seg_*.wav")))
+    paths.extend(glob.glob(os.path.join(shm_dir, "seg_*_trimmed.wav")))
+    return paths
+
+
+def _remove_paths(paths_to_remove: list[str]) -> None:
+    import os  # noqa: PLC0415
+
     for path in paths_to_remove:
         try:
             if os.path.exists(path):
                 os.remove(path)
         except OSError as e:
             logger.debug("Failed to remove clean-up file %s: %s", path, e)
+
+
+def _cleanup(config: Config) -> None:
+    """Remove intermediate files from the RAM disk on exit."""
+    logger.info("Cleaning up intermediate /dev/shm/ files...")
+    _remove_paths(_ramdisk_paths(config))
 
 
 def main() -> None:
@@ -86,6 +112,11 @@ def main() -> None:
     # Unload any stale models before starting to maximise RAM for Whisper
     translator.reset()
 
+    # Sweep leftovers from an interrupted previous run (e.g. yt-dlp
+    # partial-stream fragments) before starting fresh — the exit-time
+    # _cleanup() cannot run if the process was SIGKILLed.
+    _remove_paths(_ramdisk_paths(config))
+
     try:
         if not downloader.download(args.url):
             logger.error("Download failed, aborting.")
@@ -101,12 +132,16 @@ def main() -> None:
         log_vram("post-translate", config)
 
         if config.output_format == "dubbed":
-            AudioDubber(config).dub(translated)
+            produced = AudioDubber(config).dub(translated)
         else:
-            SubtitleWriter(config).write(translated)
+            produced = SubtitleWriter(config).write(translated)
 
         log_memory("post-output", config)
         log_vram("post-output", config)
+
+        if not produced:
+            logger.warning("No speech detected — no output file produced.")
+            sys.exit(0)
 
         output = (
             config.output_video
