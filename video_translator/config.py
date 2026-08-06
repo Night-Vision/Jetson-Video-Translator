@@ -86,7 +86,13 @@ class Config:
         i = 1
         while True:
             video_path = os.path.join(outputs_dir, f"dubbed_{i:03d}.mp4")
-            if not os.path.exists(video_path):
+            # Advance past both video and subtitle slots, so repeated
+            # subtitle-only runs don't overwrite the previous subtitles_NNN file.
+            sub_base = f"subtitles_{i:03d}."
+            slot_free = not os.path.exists(video_path) and not any(
+                name.startswith(sub_base) for name in os.listdir(outputs_dir)
+            )
+            if slot_free:
                 self.output_video = video_path
                 self.output_subtitles = os.path.join(outputs_dir, f"subtitles_{i:03d}")
                 break

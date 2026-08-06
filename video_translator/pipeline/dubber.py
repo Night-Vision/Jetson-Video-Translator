@@ -123,7 +123,9 @@ class AudioDubber:
                     segments[i - 1].start_time + min_dur,
                     segments[i].start_time,
                 )
-                segments[i - 1].end_time = desired_end
+                # Cap at the next segment's start: if the gap is < min_dur,
+                # non-overlap wins over the 0.5 s floor (else two dubs overlap).
+                segments[i - 1].end_time = min(desired_end, segments[i].start_time)
 
         # Second pass: ensure every segment has at least min_dur without re-overlapping
         for i in range(len(segments)):
