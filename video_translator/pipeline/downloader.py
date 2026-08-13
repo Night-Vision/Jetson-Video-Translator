@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import time
 from typing import TYPE_CHECKING
@@ -20,9 +21,21 @@ class Downloader:
     def download(self, url: str) -> bool:
         """Return True on success, False on failure (never raises)."""
         logger.info("Downloading media...")
+
+        # YouTube presents JS challenges that require the yt-dlp-ejs scripts
+        # plus an enabled JS runtime; without them yt-dlp falls back to the
+        # increasingly fragile jless clients. Node is not enabled by default
+        # (only Deno is), so it must be requested explicitly.
+        if shutil.which("node") is None:
+            logger.warning(
+                "node not found on PATH — yt-dlp-ejs JS challenge solving "
+                "unavailable; YouTube extraction will fall back to jless clients"
+            )
+
         cmd = [
             "yt-dlp",
             "--extractor-args", "youtube:player_client=default",
+            "--js-runtimes", "node",
             "-f", "bestvideo+bestaudio/best",
             "--merge-output-format", "mp4",
             "-o", self.config.tmp_video,

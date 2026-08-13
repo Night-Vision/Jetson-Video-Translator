@@ -18,6 +18,7 @@ dist/
 .vscode/
 .claude/
 .cursor/
+.agents/
 *.swp
 *.swo
 reasonix.toml

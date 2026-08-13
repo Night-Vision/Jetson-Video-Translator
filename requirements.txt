@@ -12,6 +12,14 @@ nvidia-ml-py==12.560.30
 huggingface_hub==1.14.0   # model download from HuggingFace Hub
 tokenizers==0.22.2        # HF tokenizer used by faster-whisper
 
+# === External tools (NOT venv-installed; invoked from PATH) ================
+# yt-dlp runs as a system tool via subprocess (pipeline/downloader.py), like
+# ffmpeg/ffprobe. For YouTube JS challenge solving it additionally needs:
+#   - yt-dlp-ejs  (install: /usr/bin/python3 -m pip install --user "yt-dlp[default]")
+#   - a JS runtime enabled via `--js-runtimes node` (set in downloader.py)
+# Keep yt-dlp and yt-dlp-ejs version-matched — yt-dlp ignores unsupported
+# yt-dlp-ejs versions. Current pair: yt-dlp 2026.06.09 + yt-dlp-ejs 0.8.0.
+
 # === CTranslate2 — compiled from source on Jetson Orin =====================
 # Do NOT install via pip on aarch64+CUDA; use compile_ctranslate2.sh instead.
 # The local build is registered as an editable install pointing to:
