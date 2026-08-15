@@ -27,8 +27,6 @@ class WhisperModel(BaseModel):
     ) -> None:
         self.model_size = model_size
         self.min_free_ram_gb = min_free_ram_gb
-        self.backend = backend
-        self.engine_dir = engine_dir
         self._model = None
 
     def _load(self) -> None:
@@ -39,24 +37,9 @@ class WhisperModel(BaseModel):
                 f"{available_gb:.1f} GB available, "
                 f"{self.min_free_ram_gb} GB required."
             )
-        if self.backend == "whisper_trt":
-            self._load_trt()
-        else:
-            self._load_faster_whisper()
-
-    def _load_faster_whisper(self) -> None:
-        # Lazy import — keeps CUDA context out of non-inference processes
         from faster_whisper import WhisperModel as _WhisperModel  # noqa: PLC0415
         self._model = _WhisperModel(
             self.model_size, device="cuda", compute_type="int8"
-        )
-
-    def _load_trt(self) -> None:
-        # Lazy import — whisper_trt may not be installed
-        from whisper_trt import WhisperTRT  # noqa: PLC0415
-        self._model = WhisperTRT(
-            engine_dir=self.engine_dir or self.model_size,
-            device="cuda",
         )
 
     def _unload(self) -> None:
