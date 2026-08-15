@@ -33,7 +33,15 @@ def _parse_args() -> argparse.Namespace:
         "--bg-volume", type=float, default=None,
         help="Original audio volume during speech (0.0=mute, 1.0=full, default=0.15)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-tempo", type=float, default=None,
+        help="Max dub speech-rate speedup when translation is longer than its window "
+             "(1.0=never speed up, default=1.35)",
+    )
+    args = parser.parse_args()
+    if args.max_tempo is not None and args.max_tempo < 1.0:
+        parser.error("--max-tempo must be >= 1.0 (1.0 = never speed up)")
+    return args
 
 
 def _ramdisk_paths(config: Config) -> list[str]:
@@ -103,6 +111,8 @@ def main() -> None:
     )
     if args.bg_volume is not None:
         config.bg_volume = args.bg_volume
+    if args.max_tempo is not None:
+        config.max_tempo = args.max_tempo
 
     downloader  = Downloader(config)
     extractor   = AudioExtractor(config)
@@ -140,7 +150,7 @@ def main() -> None:
         log_vram("post-output", config)
 
         if not produced:
-            logger.warning("No speech detected — no output file produced.")
+            logger.warning("No speech or dubbable segments — no output file produced.")
             sys.exit(0)
 
         output = (

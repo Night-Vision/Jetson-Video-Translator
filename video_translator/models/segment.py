@@ -10,3 +10,5 @@ class Segment:
     confidence: float       # faster-whisper avg_logprob for this segment
     translated_text: str = ""   # populated by Translator stage
     gender: str = ""            # populated by AudioDubber for Piper voice selection
+    dub_end: float | None = None  # effective end of the placed dub (start + trim_duration);
+                                  # populated by AudioDubber, used by the mux ducking window
