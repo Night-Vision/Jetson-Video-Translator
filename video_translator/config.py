@@ -14,6 +14,9 @@ class Config:
     output_format: str = "dubbed"
     # Background music/audio ducking volume multiplier (0.0 to 1.0)
     bg_volume: float = 0.15
+    # Max TTS speech-rate speedup when the translation is longer than its
+    # window (1.0 = never speed up; excess is cut / spills into the pause).
+    max_tempo: float = 1.35
 
     # ── Intermediate paths — /dev/shm/ is RAM-backed tmpfs on Linux ─────────
     tmp_video: str = "/dev/shm/input_vid.mp4"
@@ -26,8 +29,6 @@ class Config:
     # ── Runtime-resolved paths (populated by __post_init__ if left empty) ───
     piper_bin: str = ""
     tts_models_dir: str = ""
-    # Optional Firefox profile path for yt-dlp cookie auth; leave empty to skip
-    browser_cookies_path: str = ""
 
     # ── Whisper ─────────────────────────────────────────────────────────────
     whisper_model: str = "small"
@@ -35,10 +36,6 @@ class Config:
     vad_filter: bool = True
     # Minimum free RAM before attempting to load Whisper
     min_free_ram_gb: float = 2.0
-    # Backend: "faster_whisper" (CTranslate2, default) | "whisper_trt" (experimental)
-    whisper_backend: str = "faster_whisper"
-    # Path to pre-built TensorRT engine directory (only used when whisper_backend == "whisper_trt")
-    whisper_trt_engine_dir: str = ""
 
     # ── NLLB Translation ────────────────────────────────────────────────────
     model_id: str = "facebook/nllb-200-distilled-600M"
