@@ -40,12 +40,6 @@ class Downloader:
             "--merge-output-format", "mp4",
             "-o", self.config.tmp_video,
         ]
-        # Only inject cookie auth when a Firefox profile path is configured
-        if self.config.browser_cookies_path:
-            cmd.extend([
-                "--cookies-from-browser",
-                f"firefox:{self.config.browser_cookies_path}",
-            ])
         cmd.append(url)
 
         max_attempts = 3

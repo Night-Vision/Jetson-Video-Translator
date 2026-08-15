@@ -56,8 +56,6 @@ class Transcriber:
                     "--segments", self.config.tmp_segments,
                     "--model", self.config.whisper_model,
                     "--min-ram", str(self.config.min_free_ram_gb),
-                    "--backend", self.config.whisper_backend,
-                    "--engine-dir", self.config.whisper_trt_engine_dir,
                     "--vad", str(self.config.vad_filter),
                     "--word-timestamps", str(self.config.word_timestamps),
                 ],
@@ -101,13 +99,11 @@ if __name__ == "__main__":
     parser.add_argument("--segments",        required=True)
     parser.add_argument("--model",           required=True)
     parser.add_argument("--min-ram",         type=float, required=True)
-    parser.add_argument("--backend",         default="faster_whisper")
-    parser.add_argument("--engine-dir",      default="")
     parser.add_argument("--vad",             type=lambda x: x.lower() == "true", required=True)
     parser.add_argument("--word-timestamps", type=lambda x: x.lower() == "true", required=True)
     args = parser.parse_args()
 
-    whisper = WhisperModel(args.model, args.min_ram, backend=args.backend, engine_dir=args.engine_dir)
+    whisper = WhisperModel(args.model, args.min_ram)
     with whisper.lifecycle():
         segments_iter, info = whisper.transcribe(
             args.audio,
