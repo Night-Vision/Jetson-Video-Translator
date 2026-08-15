@@ -30,6 +30,17 @@ _TTS_MODELS: dict[str, dict[str, str]] = {
 _DEFAULT_MODELS = {"female": "en_US-lessac-medium.onnx", "male": "en_US-lessac-medium.onnx"}
 
 
+def _duck_end(seg: Segment, padding: float) -> float:
+    """End of the ducking window for a segment.
+
+    Covers the effective dub extent (dub_end + padding) if set,
+    otherwise falls back to the Whisper segment end (end_time + padding).
+    """
+    if seg.dub_end is not None:
+        return seg.dub_end + padding
+    return seg.end_time + padding
+
+
 class AudioDubber:
     """Pipeline stage: generate Piper TTS audio and mux it with the source video.
 
@@ -97,6 +108,8 @@ class AudioDubber:
         sample_rate = self._get_video_audio_rate() or self._get_model_sample_rate()
 
         dub_track = self._mix_segments_to_track(segments, sample_rate, video_duration)
+        if dub_track is None:
+            return False
         try:
             self._mux_final_video(segments, dub_track)
         finally:
@@ -180,11 +193,20 @@ class AudioDubber:
             )
         model_path = model_path_candidate if os.path.exists(model_path_candidate) else model_name
 
-        # Piper accepts newline-delimited JSON objects: {"text": ..., "output_file": ...}
-        input_lines = "\n".join(
-            json.dumps({"text": seg.translated_text, "output_file": f"/dev/shm/seg_{i}.wav"})
-            for i, seg in group
-        ) + "\n"
+        payloads = []
+        for i, seg in group:
+            target_dur = max(0.1, seg.end_time - seg.start_time)
+            est_dur = len(seg.translated_text) * 0.065
+            speedup = max(1.0, min(est_dur / target_dur, self.config.max_tempo))
+            length_scale = round(1.0 / speedup, 3)
+
+            payloads.append({
+                "text": seg.translated_text,
+                "output_file": f"/dev/shm/seg_{i}.wav",
+                "length_scale": length_scale,
+            })
+
+        input_lines = "\n".join(json.dumps(p) for p in payloads) + "\n"
 
         logger.info(
             "Spawning Piper TTS (%s) for %d segments using model: %s",
@@ -222,8 +244,12 @@ class AudioDubber:
 
     def _mix_segments_to_track(
         self, segments: list[Segment], sample_rate: int, video_duration: float
-    ) -> str:
-        """Build one ffmpeg filter_complex that delays + tempo-adjusts all segment WAVs."""
+    ) -> str | None:
+        """Build one ffmpeg filter_complex that delays + tempo-adjusts all segment WAVs.
+
+        Returns the dub track path, or None when every segment was dropped as
+        silent TTS (nothing to dub).
+        """
         logger.info("Compiling final audio track...")
 
         # A zero duration means the earlier ffprobe failed.  Do not build a
@@ -276,20 +302,39 @@ class AudioDubber:
             kept.append(seg)
             kept_idx.append(i)
 
-            # Normalize sample rate BEFORE any time-sensitive filters
-            rate_filter = f"aresample={sample_rate}:async=1:first_pts=0,"
-
-            tempo_filter = self._build_tempo_filter(actual_duration, target_duration)
+            # Speed up (capped) only when TTS is longer than the slot; if the
+            # capped tempo still cannot fit it, let the excess spill into the
+            # trailing pause (bounded by the next segment start) before the
+            # hard atrim cut — never speed-garble beyond max_tempo.
+            tempo_filter = self._build_tempo_filter(
+                actual_duration, target_duration, self.config.max_tempo
+            )
             tempo_str = f"{tempo_filter}," if tempo_filter else ""
+            fitted = (
+                actual_duration
+                / min(actual_duration / target_duration, self.config.max_tempo)
+                if actual_duration > target_duration
+                else actual_duration
+            )
+            trim_duration = target_duration
+            if fitted > target_duration:
+                slack = 0.0
+                if i + 1 < len(segments):
+                    slack = max(0.0, segments[i + 1].start_time - seg.end_time)
+                trim_duration = min(fitted, target_duration + slack)
 
             # Hard-limit segment length so it can never spill into the next slot
-            exact_dur = f"atrim=duration={target_duration:.4f}"
+            exact_dur = f"atrim=duration={trim_duration:.4f}"
+
+            # Remember the effective dub extent so the mux can duck the
+            # original audio across the whole spill tail, not just the window.
+            seg.dub_end = seg.start_time + trim_duration
 
             # Round to nearest ms instead of truncating toward zero
             delay_ms = round(seg.start_time * 1000)
 
             filter_parts.append(
-                f"[{input_idx}:a]{rate_filter}{tempo_str}{exact_dur},"
+                f"[{input_idx}:a]{tempo_str}{exact_dur},"
                 f"adelay=delays={delay_ms}|{delay_ms}:all=1[a{i}];"
             )
 
@@ -297,16 +342,30 @@ class AudioDubber:
         # so the original audio stays in those windows.
         segments[:] = kept
         n = len(kept_idx)
-        amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in kept_idx)
-        # duration=first forces output length == silent_base length == video_duration
-        filter_complex = (
-            "".join(filter_parts)
-            + f"{amix_inputs}amix=inputs={n+1}:dropout_transition=0:"
-            f"normalize=0:duration=first[out]"
-        )
+        dropped = n_total - n
+        if dropped and n > 0:
+            logger.warning(
+                "Dropped %d of %d segments (silent TTS) — original audio kept in those windows",
+                dropped, n_total,
+            )
 
         dub_track = "/dev/shm/dub_track_main.wav"
         try:
+            if not kept:
+                logger.warning(
+                    "All %d segments produced silent TTS — no dub track; "
+                    "keeping the original audio, no output video will be written",
+                    n_total,
+                )
+                return None
+
+            amix_inputs = "[0:a]" + "".join(f"[a{i}]" for i in kept_idx)
+            # duration=first forces output length == silent_base length == video_duration
+            filter_complex = (
+                "".join(filter_parts)
+                + f"{amix_inputs}amix=inputs={n+1}:dropout_transition=0:"
+                f"normalize=0:duration=first[out]"
+            )
             subprocess.run(
                 ["ffmpeg", "-y"] + dub_inputs + [
                     "-filter_complex", filter_complex,
@@ -343,8 +402,10 @@ class AudioDubber:
         """Mute source speech windows and mix in the dub track, then write output."""
         logger.info("Building dynamic muting filter...")
         padding = 0.1  # 100 ms boundary padding
+        # Duck the original across the segment window AND any spill tail: a
+        # capped-tempo dub can legitimately extend past end_time + padding.
         between_exprs = " + ".join(
-            f"between(t,{max(0.0, s.start_time - padding):.3f},{s.end_time + padding:.3f})"
+            f"between(t,{max(0.0, s.start_time - padding):.3f},{_duck_end(s, padding):.3f})"
             for s in segments
         )
         volume_filter = (
@@ -374,25 +435,33 @@ class AudioDubber:
         )
 
     @staticmethod
-    def _build_tempo_filter(actual: float, target: float) -> str:
-        """Return a chained atempo filter string clamped to ffmpeg's 0.5–2.0 range.
+    def _build_tempo_filter(actual: float, target: float, max_tempo: float) -> str:
+        """Return a chained atempo filter string clamped to `max_tempo`.
 
-        Only speeds up (ratio > 1.0) when TTS is longer than the time slot, so a
-        long TTS never spills into the next window.  Never slows down: Whisper
-        segment windows include natural trailing pause, so stretching the trimmed
-        TTS to fill them distorts the speech rate and desyncs the dub from the
-        video.  Short TTS simply ends early at its natural pace.
+        Only speeds up (ratio > 1.0) when TTS is longer than the time slot, and
+        never beyond `max_tempo` (default 1.35): beyond that the excess is cut
+        or spills into the trailing pause instead of being speed-garbled.
+        Never slows down: Whisper segment windows include natural trailing
+        pause, so stretching the trimmed TTS to fill them distorts the speech
+        rate and desyncs the dub from the video.  Short TTS simply ends early
+        at its natural pace.
+
+        Note: chaining atempo=2.0 stages is required for speedups above 2.0
+        (some builds cap a single instance there); the `max_tempo` clamp means
+        the chain is only exercised for unusually high user-configured caps.
         """
         ratio = actual / target
-        if ratio <= 1.0:
+        if ratio <= 1.0 or max_tempo <= 1.0:
             return ""
+        capped = min(ratio, max_tempo)
         filters: list[str] = []
         # Speed up — chain atempo=2.0 for ratios above 2.0
-        while ratio > 2.0:
+        r = capped
+        while r > 2.0:
             filters.append("atempo=2.0")
-            ratio /= 2.0
-        if abs(ratio - 1.0) > 1e-4:
-            filters.append(f"atempo={ratio:.3f}")
+            r /= 2.0
+        if abs(r - 1.0) > 1e-4:
+            filters.append(f"atempo={r:.3f}")
         return ",".join(filters)
 
     @staticmethod
