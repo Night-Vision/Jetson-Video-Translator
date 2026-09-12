@@ -12,8 +12,9 @@ class Config:
     debug: bool = False
     # Output mode: "dubbed" | "srt" | "vtt" | "json"
     output_format: str = "dubbed"
-    # Background music/audio ducking volume multiplier (0.0 to 1.0)
-    bg_volume: float = 0.15
+    # Background music/audio ducking toggle and volume multiplier (0.0 to 1.0)
+    enable_ducking: bool = False
+    bg_volume: float = 0.0
     # Max TTS speech-rate speedup when the translation is longer than its
     # window (1.0 = never speed up; excess is cut / spills into the pause).
     max_tempo: float = 1.35

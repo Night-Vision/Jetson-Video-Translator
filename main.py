@@ -29,9 +29,10 @@ def _parse_args() -> argparse.Namespace:
         help="Output format (default: dubbed)",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug memory logging")
+    parser.add_argument("--enable-ducking", action="store_true", help="Enable dynamic background music ducking during speech")
     parser.add_argument(
         "--bg-volume", type=float, default=None,
-        help="Original audio volume during speech (0.0=mute, 1.0=full, default=0.15)",
+        help="Original audio volume during speech (default: 0.15 when ducking enabled, 0.0 when disabled)",
     )
     parser.add_argument(
         "--max-tempo", type=float, default=None,
@@ -110,7 +111,19 @@ def main() -> None:
         debug=args.debug,
     )
     if args.bg_volume is not None:
-        config.bg_volume = args.bg_volume
+        if args.bg_volume > 0.0:
+            config.enable_ducking = True
+            config.bg_volume = args.bg_volume
+        else:
+            config.enable_ducking = False
+            config.bg_volume = 0.0
+    elif args.enable_ducking:
+        config.enable_ducking = True
+        config.bg_volume = 0.15
+    else:
+        config.enable_ducking = False
+        config.bg_volume = 0.0
+
     if args.max_tempo is not None:
         config.max_tempo = args.max_tempo
 

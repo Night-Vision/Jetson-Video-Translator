@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 from ..utils.audio_utils import estimate_gender, get_wav_duration
@@ -399,11 +400,30 @@ class AudioDubber:
         return dub_track
 
     def _mux_final_video(self, segments: list[Segment], dub_track: str) -> None:
-        """Mute source speech windows and mix in the dub track, then write output."""
-        logger.info("Building dynamic muting filter...")
+        """Mute source speech windows and mix in the dub track, or direct map if ducking disabled."""
+        if not self.config.enable_ducking or self.config.bg_volume <= 0.0:
+            logger.info("Fast path muxing (direct stream replacement, ducking disabled)...")
+            t0 = time.perf_counter()
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", self.config.tmp_video,
+                    "-i", dub_track,
+                    "-map", "0:v", "-map", "1:a",
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-threads", "4",
+                    self.config.output_video,
+                ],
+                check=True,
+            )
+            elapsed = time.perf_counter() - t0
+            logger.info("Mux stage completed in %.3f seconds (Fast Path)", elapsed)
+            return
+
+        logger.info("Dynamic ducking muxing (bg_volume=%.2f)...", self.config.bg_volume)
+        t0 = time.perf_counter()
         padding = 0.1  # 100 ms boundary padding
-        # Duck the original across the segment window AND any spill tail: a
-        # capped-tempo dub can legitimately extend past end_time + padding.
         between_exprs = " + ".join(
             f"between(t,{max(0.0, s.start_time - padding):.3f},{_duck_end(s, padding):.3f})"
             for s in segments
@@ -413,7 +433,6 @@ class AudioDubber:
             if between_exprs else "[0:a]volume=1.0[bg]"
         )
 
-        logger.info("Final muxing...")
         subprocess.run(
             [
                 "ffmpeg", "-y",
@@ -433,6 +452,8 @@ class AudioDubber:
             ],
             check=True,
         )
+        elapsed = time.perf_counter() - t0
+        logger.info("Mux stage completed in %.3f seconds (Ducking Path)", elapsed)
 
     @staticmethod
     def _build_tempo_filter(actual: float, target: float, max_tempo: float) -> str:
