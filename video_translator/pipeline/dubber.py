@@ -78,39 +78,59 @@ class AudioDubber:
                 logger.warning("Failed to parse model JSON %s: %s", json_path, e)
         return 22050
 
-    def _get_video_audio_rate(self) -> int | None:
-        """Probe the original video's audio stream sample rate."""
+    def _probe(self) -> dict:
+        """Everything the dubber needs from the container, in one ffprobe call.
+
+        `-show_entries` takes several sections separated by `:`, so duration,
+        both stream start PTS values and the audio sample rate come back
+        together -- four subprocess spawns collapsed into one.
+        """
         try:
-            probe = subprocess.check_output([
+            raw = subprocess.check_output([
                 "ffprobe", "-v", "error",
-                "-select_streams", "a:0",
-                "-show_entries", "stream=sample_rate",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                "-show_entries",
+                "format=duration:stream=codec_type,start_time,sample_rate",
+                "-of", "json",
                 self.config.tmp_video,
             ])
-            rate = int(probe)
-            logger.info("Detected video audio sample rate: %d Hz", rate)
-            return rate
+            return self._parse_probe(json.loads(raw))
         except Exception as exc:
-            logger.warning("Could not read video audio rate: %s", exc)
-            return None
+            logger.warning("ffprobe failed (%s) — using fallbacks", exc)
+            return self._parse_probe({})
 
-    def _stream_start(self, stream: str) -> float:
-        """Container start PTS of a stream in seconds; 0.0 when unavailable."""
+    @staticmethod
+    def _parse_probe(data: dict) -> dict:
+        """Pull the four fields out of ffprobe JSON; fall back on anything absent.
+
+        Streams are matched on codec_type rather than position -- container
+        stream order is not guaranteed.
+        """
+        def _stream(kind: str) -> dict:
+            for st in data.get("streams", []):
+                if st.get("codec_type") == kind:
+                    return st
+            return {}
+
+        def _float(value, default: float) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        audio = _stream("audio")
         try:
-            probe = subprocess.check_output([
-                "ffprobe", "-v", "error",
-                "-select_streams", stream,
-                "-show_entries", "stream=start_time",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                self.config.tmp_video,
-            ])
-            return float(probe)
-        except Exception as exc:
-            logger.warning("Could not read %s start_time: %s", stream, exc)
-            return 0.0
+            sample_rate = int(audio["sample_rate"])
+        except (KeyError, TypeError, ValueError):
+            sample_rate = None
 
-    def _resolve_audio_offset(self) -> float:
+        return {
+            "duration": _float(data.get("format", {}).get("duration"), 0.0),
+            "sample_rate": sample_rate,
+            "a_start": _float(audio.get("start_time"), 0.0),
+            "v_start": _float(_stream("video").get("start_time"), 0.0),
+        }
+
+    def _resolve_audio_offset(self, probe: dict) -> float:
         """Seconds to shift the dub so it lands on the *video* timeline.
 
         Whisper timestamps are relative to the first sample of the extracted
@@ -123,7 +143,7 @@ class AudioDubber:
             logger.info("Audio offset (user-supplied): %+.3f s", self.config.audio_offset)
             return self.config.audio_offset
 
-        offset = self._stream_start("a:0") - self._stream_start("v:0")
+        offset = probe["a_start"] - probe["v_start"]
         if abs(offset) > 5.0:
             logger.warning(
                 "Probed audio offset %+.3f s is implausible — using 0.0; "
@@ -141,15 +161,16 @@ class AudioDubber:
             return False
 
         logger.info("Generating dubbed audio & synchronizing...")
-        self.audio_offset = self._resolve_audio_offset()
-        video_duration = self._get_video_duration()
+        probe = self._probe()
+        self.audio_offset = self._resolve_audio_offset(probe)
+        video_duration = probe["duration"]
         self._resolve_overlaps(segments, video_duration)
         self._assign_genders(segments)
         log_oc("dub:post-gender", self.config)
         self._run_tts_for_all_genders(segments)
         log_oc("dub:post-tts", self.config)
 
-        sample_rate = self._get_video_audio_rate() or self._get_model_sample_rate()
+        sample_rate = probe["sample_rate"] or self._get_model_sample_rate()
 
         dub_track = self._mix_segments_to_track(segments, sample_rate, video_duration)
         log_oc("dub:post-mix", self.config)
@@ -163,19 +184,6 @@ class AudioDubber:
         return True
 
     # ── Step helpers ─────────────────────────────────────────────────────────
-
-    def _get_video_duration(self) -> float:
-        try:
-            probe = subprocess.check_output([
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                self.config.tmp_video,
-            ])
-            return float(probe)
-        except Exception as exc:
-            logger.warning("Could not read video duration: %s", exc)
-            return 0.0
 
     def _resolve_overlaps(self, segments: list[Segment], video_duration: float) -> None:
         """Ensure no two segments overlap; clamp last segment to video duration."""
@@ -513,3 +521,35 @@ class AudioDubber:
             os.remove(dub_track)
         except OSError:
             pass
+
+
+def _self_check() -> None:
+    """_parse_probe must key off codec_type, not stream order, and survive gaps."""
+    parse = AudioDubber._parse_probe
+
+    # Audio listed first, video second — order must not matter.
+    got = parse({
+        "streams": [
+            {"codec_type": "audio", "start_time": "1.250", "sample_rate": "48000"},
+            {"codec_type": "video", "start_time": "0.500"},
+        ],
+        "format": {"duration": "64.32"},
+    })
+    assert got == {
+        "duration": 64.32, "sample_rate": 48000, "a_start": 1.25, "v_start": 0.5
+    }, got
+
+    # A container with no audio stream and no duration must not raise.
+    got = parse({"streams": [{"codec_type": "video"}]})
+    assert got == {
+        "duration": 0.0, "sample_rate": None, "a_start": 0.0, "v_start": 0.0
+    }, got
+
+    # Empty payload (the ffprobe-failed path) falls back across the board.
+    assert parse({})["duration"] == 0.0
+
+    print("dubber self-check OK")
+
+
+if __name__ == "__main__":
+    _self_check()

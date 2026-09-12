@@ -107,6 +107,11 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)]
     )
+    # --debug sets the ROOT level, which httpx/httpcore inherit -- they then dump
+    # every request header while the HF hub is fetched, burying the stage logs.
+    # Both loggers are configurable separately (httpx docs: docs/logging.md).
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     config = Config(
         target_lang=args.lang,
