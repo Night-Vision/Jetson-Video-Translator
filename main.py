@@ -35,6 +35,10 @@ def _parse_args() -> argparse.Namespace:
         help="Original audio volume during speech (default: 0.15 when ducking enabled, 0.0 when disabled)",
     )
     parser.add_argument(
+        "--audio-offset", type=float, default=None,
+        help="Shift the dub by N seconds (default: auto-probe stream start PTS)",
+    )
+    parser.add_argument(
         "--max-tempo", type=float, default=None,
         help="Max dub speech-rate speedup when translation is longer than its window "
              "(1.0=never speed up, default=1.35)",
@@ -124,6 +128,8 @@ def main() -> None:
         config.enable_ducking = False
         config.bg_volume = 0.0
 
+    if args.audio_offset is not None:
+        config.audio_offset = args.audio_offset
     if args.max_tempo is not None:
         config.max_tempo = args.max_tempo
 

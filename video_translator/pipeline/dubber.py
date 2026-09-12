@@ -7,7 +7,7 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
-from ..utils.audio_utils import estimate_gender, get_wav_duration
+from ..utils.audio_utils import estimate_gender, speech_bounds
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -55,6 +55,7 @@ class AudioDubber:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        self.audio_offset = 0.0
 
     def _get_model_sample_rate(self) -> int:
         """Resolve sample rate from target model config JSON; defaults to 22050 Hz."""
@@ -93,6 +94,44 @@ class AudioDubber:
             logger.warning("Could not read video audio rate: %s", exc)
             return None
 
+    def _stream_start(self, stream: str) -> float:
+        """Container start PTS of a stream in seconds; 0.0 when unavailable."""
+        try:
+            probe = subprocess.check_output([
+                "ffprobe", "-v", "error",
+                "-select_streams", stream,
+                "-show_entries", "stream=start_time",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                self.config.tmp_video,
+            ])
+            return float(probe)
+        except Exception as exc:
+            logger.warning("Could not read %s start_time: %s", stream, exc)
+            return 0.0
+
+    def _resolve_audio_offset(self) -> float:
+        """Seconds to shift the dub so it lands on the *video* timeline.
+
+        Whisper timestamps are relative to the first sample of the extracted
+        WAV, which ffmpeg writes at t=0 regardless of the audio stream's
+        container start PTS.  The final mux uses `-c:v copy`, so the video
+        keeps its own start PTS.  When the two differ (routine for yt-dlp
+        bestvideo+bestaudio merges) every segment is off by that constant.
+        """
+        if self.config.audio_offset is not None:
+            logger.info("Audio offset (user-supplied): %+.3f s", self.config.audio_offset)
+            return self.config.audio_offset
+
+        offset = self._stream_start("a:0") - self._stream_start("v:0")
+        if abs(offset) > 5.0:
+            logger.warning(
+                "Probed audio offset %+.3f s is implausible — using 0.0; "
+                "pass --audio-offset to set it by ear", offset,
+            )
+            return 0.0
+        logger.info("Audio offset (probed a:0 - v:0): %+.3f s", offset)
+        return offset
+
     def dub(self, segment_iter) -> bool:
         """Generate the dubbed video; return False when there is nothing to dub."""
         segments: list[Segment] = list(segment_iter)
@@ -101,6 +140,7 @@ class AudioDubber:
             return False
 
         logger.info("Generating dubbed audio & synchronizing...")
+        self.audio_offset = self._resolve_audio_offset()
         video_duration = self._get_video_duration()
         self._resolve_overlaps(segments, video_duration)
         self._assign_genders(segments)
@@ -222,27 +262,6 @@ class AudioDubber:
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(f"Piper TTS failed for {gender} voice: {exc}")
 
-    @staticmethod
-    def _trim_tts_silence(wav_path: str, sample_rate: int) -> None:
-        """Strip leading/trailing silence from a Piper WAV in-place."""
-        trimmed = wav_path.replace(".wav", "_trimmed.wav")
-        try:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", wav_path,
-                "-af", "silenceremove=start_periods=1:start_duration=0.03:"
-                       "start_threshold=-45dB:stop_periods=1:stop_duration=0.03:"
-                       "stop_threshold=-45dB",
-                "-ar", str(sample_rate), "-ac", "2",
-                trimmed,
-            ], check=True, capture_output=True)
-            os.replace(trimmed, wav_path)
-        except Exception as exc:
-            logger.warning("Silence trim failed for %s: %s", wav_path, exc)
-            try:
-                os.remove(trimmed)
-            except OSError:
-                pass
-
     def _mix_segments_to_track(
         self, segments: list[Segment], sample_rate: int, video_duration: float
     ) -> str | None:
@@ -278,25 +297,32 @@ class AudioDubber:
             out_file = f"/dev/shm/seg_{i}.wav"
             target_duration = max(0.1, seg.end_time - seg.start_time)
 
-            # Strip leading/trailing TTS silence before measuring duration
-            self._trim_tts_silence(out_file, sample_rate)
-
+            # Locate the speech span instead of destructively trimming the WAV:
+            # leading/trailing silence is skipped by atrim inside the main graph,
+            # and internal pauses are left intact.
             try:
-                actual_duration = get_wav_duration(out_file)
+                bounds = speech_bounds(out_file)
             except Exception as exc:
-                logger.warning("Could not read WAV duration for %s: %s", out_file, exc)
-                actual_duration = target_duration
+                logger.warning("Could not read WAV %s: %s", out_file, exc)
+                bounds = None
 
             # Piper emits a ~0.2 s all-zero WAV for text it can't vocalize (empty,
-            # whitespace, "♪", "...").  After silence-trim it measures ~0 s: mixing
-            # that silence while still ducking the original would blank the window.
+            # whitespace, "♪", "...").  Its speech span is empty: mixing that
+            # silence while still ducking the original would blank the window.
             # Drop the segment — no dub, and no ducking (original audio stays).
-            if actual_duration < 0.05:
+            if bounds is None or bounds[1] - bounds[0] < 0.05:
                 logger.warning(
-                    "Dropping seg %d: TTS is silent (%.3f s) — keeping original audio",
-                    i, actual_duration,
+                    "Dropping seg %d: TTS is silent — keeping original audio", i,
                 )
                 continue
+
+            speech_start, speech_end = bounds
+            actual_duration = speech_end - speech_start
+            # atrim keeps the source timestamps, so asetpts must rebase to zero
+            # before adelay — otherwise the leading silence is added back as delay.
+            trim_str = (
+                f"atrim=start={speech_start:.4f}:end={speech_end:.4f},asetpts=N/SR/TB,"
+            )
 
             input_idx = len(dub_inputs) // 2   # silent_base is input 0
             dub_inputs.extend(["-i", out_file])
@@ -307,16 +333,10 @@ class AudioDubber:
             # capped tempo still cannot fit it, let the excess spill into the
             # trailing pause (bounded by the next segment start) before the
             # hard atrim cut — never speed-garble beyond max_tempo.
-            tempo_filter = self._build_tempo_filter(
+            tempo_filter, fitted = self._build_tempo_filter(
                 actual_duration, target_duration, self.config.max_tempo
             )
             tempo_str = f"{tempo_filter}," if tempo_filter else ""
-            fitted = (
-                actual_duration
-                / min(actual_duration / target_duration, self.config.max_tempo)
-                if actual_duration > target_duration
-                else actual_duration
-            )
             trim_duration = target_duration
             if fitted > target_duration:
                 slack = 0.0
@@ -332,10 +352,10 @@ class AudioDubber:
             seg.dub_end = seg.start_time + trim_duration
 
             # Round to nearest ms instead of truncating toward zero
-            delay_ms = round(seg.start_time * 1000)
+            delay_ms = max(0, round((seg.start_time + self.audio_offset) * 1000))
 
             filter_parts.append(
-                f"[{input_idx}:a]{tempo_str}{exact_dur},"
+                f"[{input_idx}:a]{trim_str}{tempo_str}{exact_dur},"
                 f"adelay=delays={delay_ms}|{delay_ms}:all=1[a{i}];"
             )
 
@@ -380,22 +400,14 @@ class AudioDubber:
             )
         finally:
             for i in range(n_total):
-                for f in (f"/dev/shm/seg_{i}.wav", f"/dev/shm/seg_{i}_trimmed.wav"):
-                    try:
-                        os.remove(f)
-                    except OSError:
-                        pass
+                try:
+                    os.remove(f"/dev/shm/seg_{i}.wav")
+                except OSError:
+                    pass
             try:
                 os.remove(silent_base)
             except OSError:
                 pass
-
-        # Diagnostic log check
-        for i, seg in enumerate(segments[:5]):
-            logger.info(
-                "Sync check seg %d: start=%.3f  target_dur=%.3f  file=/dev/shm/seg_%d.wav",
-                i, seg.start_time, seg.end_time - seg.start_time, i
-            )
 
         return dub_track
 
@@ -424,8 +436,10 @@ class AudioDubber:
         logger.info("Dynamic ducking muxing (bg_volume=%.2f)...", self.config.bg_volume)
         t0 = time.perf_counter()
         padding = 0.1  # 100 ms boundary padding
+        off = self.audio_offset
         between_exprs = " + ".join(
-            f"between(t,{max(0.0, s.start_time - padding):.3f},{_duck_end(s, padding):.3f})"
+            f"between(t,{max(0.0, s.start_time + off - padding):.3f},"
+            f"{max(0.0, _duck_end(s, padding) + off):.3f})"
             for s in segments
         )
         volume_filter = (
@@ -456,8 +470,11 @@ class AudioDubber:
         logger.info("Mux stage completed in %.3f seconds (Ducking Path)", elapsed)
 
     @staticmethod
-    def _build_tempo_filter(actual: float, target: float, max_tempo: float) -> str:
-        """Return a chained atempo filter string clamped to `max_tempo`.
+    def _build_tempo_filter(
+        actual: float, target: float, max_tempo: float
+    ) -> tuple[str, float]:
+        """Return a chained atempo filter clamped to `max_tempo`, and the
+        duration the segment will actually occupy after it.
 
         Only speeds up (ratio > 1.0) when TTS is longer than the time slot, and
         never beyond `max_tempo` (default 1.35): beyond that the excess is cut
@@ -473,7 +490,7 @@ class AudioDubber:
         """
         ratio = actual / target
         if ratio <= 1.0 or max_tempo <= 1.0:
-            return ""
+            return "", actual
         capped = min(ratio, max_tempo)
         filters: list[str] = []
         # Speed up — chain atempo=2.0 for ratios above 2.0
@@ -483,7 +500,7 @@ class AudioDubber:
             r /= 2.0
         if abs(r - 1.0) > 1e-4:
             filters.append(f"atempo={r:.3f}")
-        return ",".join(filters)
+        return ",".join(filters), actual / capped
 
     @staticmethod
     def _cleanup_dub_track(dub_track: str) -> None:

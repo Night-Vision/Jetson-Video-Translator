@@ -8,10 +8,34 @@ import numpy as np
 logger = logging.getLogger("video_translator.audio_utils")
 
 
-def get_wav_duration(file_path: str) -> float:
-    """Return the duration of a WAV file in seconds using stdlib wave (no subprocess)."""
+def speech_bounds(file_path: str, threshold_db: float = -45.0) -> tuple[float, float] | None:
+    """Return (start, end) seconds of the non-silent span of a WAV, or None.
+
+    Peak-based: the first and last sample whose magnitude exceeds
+    `threshold_db` relative to full scale.  Only the leading and trailing
+    silence is located -- pauses *inside* the utterance are deliberately left
+    alone, since removing them reflows the speech and desyncs the dub.
+
+    Returns None when the whole file is below the threshold.
+    """
     with wave.open(file_path, "rb") as wf:
-        return wf.getnframes() / float(wf.getframerate())
+        framerate = wf.getframerate()
+        sampwidth = wf.getsampwidth()
+        data = wf.readframes(wf.getnframes())
+
+    if sampwidth == 2:
+        signal = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+    else:
+        signal = (np.frombuffer(data, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+
+    if signal.size == 0:
+        return None
+
+    loud = np.flatnonzero(np.abs(signal) > 10.0 ** (threshold_db / 20.0))
+    if loud.size == 0:
+        return None
+
+    return float(loud[0]) / framerate, float(loud[-1] + 1) / framerate
 
 
 def estimate_gender(audio_path: str, start_time: float, end_time: float) -> str:
@@ -99,3 +123,45 @@ def _estimate_pitches(signal: np.ndarray, framerate: int) -> list[float]:
             pitches.append(pitch)
 
     return pitches
+
+
+def _self_check() -> None:
+    """Smoke test for speech_bounds: internal pauses must survive the trim."""
+    import tempfile
+
+    sr = 22050
+
+    def tone(seconds: float) -> np.ndarray:
+        t = np.arange(int(seconds * sr)) / sr
+        return (0.5 * np.sin(2 * np.pi * 220 * t) * 32767).astype(np.int16)
+
+    def hush(seconds: float) -> np.ndarray:
+        return np.zeros(int(seconds * sr), dtype=np.int16)
+
+    pcm = np.concatenate([hush(0.3), tone(0.4), hush(0.2), tone(0.3), hush(0.5)])
+    with tempfile.NamedTemporaryFile(suffix=".wav") as fh:
+        with wave.open(fh.name, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(pcm.tobytes())
+
+        bounds = speech_bounds(fh.name)
+        assert bounds is not None, "expected speech, got silence"
+        start, end = bounds
+        assert abs(start - 0.3) < 0.01, start
+        # 1.2 s, not 1.0: the 0.2 s pause between the two tones is kept.
+        assert abs(end - 1.2) < 0.01, end
+
+        with wave.open(fh.name, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(hush(0.2).tobytes())
+        assert speech_bounds(fh.name) is None, "all-silent WAV must return None"
+
+    print("audio_utils self-check OK")
+
+
+if __name__ == "__main__":
+    _self_check()

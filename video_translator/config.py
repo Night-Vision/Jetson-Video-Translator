@@ -18,6 +18,9 @@ class Config:
     # Max TTS speech-rate speedup when the translation is longer than its
     # window (1.0 = never speed up; excess is cut / spills into the pause).
     max_tempo: float = 1.35
+    # Seconds to shift the dub by, compensating for a container where the
+    # audio and video streams do not share a start PTS.  None = auto-probe.
+    audio_offset: float | None = None
 
     # ── Intermediate paths — /dev/shm/ is RAM-backed tmpfs on Linux ─────────
     tmp_video: str = "/dev/shm/input_vid.mp4"
