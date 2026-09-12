@@ -101,3 +101,5 @@ Model weights are **not** covered by this license and are downloaded at runtime:
 - **Piper voices** — vary per voice; check the source of each voice before redistributing.
 
 Commercial use requires swapping NLLB for a permissively licensed translation model.
+
+Full attribution for every dependency and model is in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
