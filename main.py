@@ -77,7 +77,6 @@ def _ramdisk_paths(config: Config) -> list[str]:
     paths.extend(glob.glob(os.path.join(shm_dir, f"{prefix}.*.ytdl")))
     # Per-segment Piper outputs (also removed by the dubber on success)
     paths.extend(glob.glob(os.path.join(shm_dir, "seg_*.wav")))
-    paths.extend(glob.glob(os.path.join(shm_dir, "seg_*_trimmed.wav")))
     return paths
 
 
@@ -158,9 +157,18 @@ def main() -> None:
         log_vram("post-extract", config)
         log_oc("post-extract", config)
 
-        segments = transcriber.transcribe()
+        # Both stages are generator functions, so calling them runs nothing --
+        # list() is what actually spawns the Whisper subprocess / loads NLLB.
+        # Without it the probes below sample a stage that has not run yet, and
+        # the work lands inside AudioDubber.dub()'s list(segment_iter) instead.
+        segments = list(transcriber.transcribe())
+        log_memory("post-transcribe", config)
+        log_vram("post-transcribe", config)
         log_oc("post-transcribe", config)
-        translated = translator.translate_segments(segments)
+
+        # iter() is required: translate_segments re-islices its argument each
+        # batch, and islice on a list restarts at 0 -- an infinite loop.
+        translated = list(translator.translate_segments(iter(segments)))
         log_memory("post-translate", config)
         log_vram("post-translate", config)
         log_oc("post-translate", config)

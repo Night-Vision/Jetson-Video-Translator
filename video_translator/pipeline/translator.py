@@ -61,3 +61,41 @@ class Translator:
                     yield seg
                     
             chunk = list(itertools.islice(segment_iter, self.config.nllb_batch_size))
+
+
+def _self_check() -> None:
+    """Each segment must be translated exactly once.
+
+    translate_segments() re-islices its argument on every batch, so it needs a
+    true iterator: islice on a list restarts at index 0 and loops forever.
+    """
+    import contextlib
+    from types import SimpleNamespace
+
+    n, batch = 7, 3
+    segments = [SimpleNamespace(text=f"s{i}", translated_text=None) for i in range(n)]
+
+    translator = Translator.__new__(Translator)   # skip __init__: no model load
+    translator.config = SimpleNamespace(
+        nllb_batch_size=batch,
+        target_lang="Russian",
+        lang_mappings={"Russian": "rus_Cyrl"},
+    )
+    translator._llm = SimpleNamespace(
+        lifecycle=contextlib.nullcontext,
+        translate_batch=lambda texts, prefix: [f"ru:{t}" for t in texts],
+    )
+
+    out = list(translator.translate_segments(iter(segments)))
+    assert len(out) == n, f"expected {n} segments, got {len(out)}"
+    assert [s.translated_text for s in out] == [f"ru:s{i}" for i in range(n)], out
+
+    # A list (not an iterator) would restart every islice -- guard the guard.
+    looped = list(itertools.islice(itertools.islice(segments, batch), batch))
+    assert [s.text for s in looped] == ["s0", "s1", "s2"], "islice-on-list assumption changed"
+
+    print("translator self-check OK")
+
+
+if __name__ == "__main__":
+    _self_check()
