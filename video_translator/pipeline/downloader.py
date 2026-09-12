@@ -36,7 +36,16 @@ class Downloader:
             "yt-dlp",
             "--extractor-args", "youtube:player_client=default",
             "--js-runtimes", "node",
-            "-f", "bestvideo+bestaudio/best",
+            # H.264 first: Orin Nano's NVDEC has no AV1 path, so an AV1 stream
+            # decodes all-core on the CPU in every later ffmpeg pass.  YouTube
+            # ships no avc1 above 1080p, so the codec filter also caps the
+            # download size -- do NOT add a [height<=N] clause, it rejects
+            # vertical formats (a 1080p Short is 1080x1920, height 1920).
+            "-f", (
+                "bv*[vcodec^=avc1]+ba[ext=m4a]/"  # H.264 + AAC: NVDEC, clean mp4 mux
+                "bv*[vcodec^=avc1]+ba/"           # H.264 + whatever audio exists
+                "bv*+ba/b"                        # last resort: any codec
+            ),
             "--merge-output-format", "mp4",
             "-o", self.config.tmp_video,
         ]
