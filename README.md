@@ -1,5 +1,10 @@
 # VideoTranslator
 
+![Platform](https://img.shields.io/badge/platform-Jetson%20Orin%20Nano-76B900)
+![Python](https://img.shields.io/badge/python-3.10-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Models](https://img.shields.io/badge/NLLB--200-CC--BY--NC--4.0-orange)
+
 Local, offline video dubbing pipeline built for the **Nvidia Jetson Orin Nano (8GB)**. Downloads a video, transcribes it, translates the speech, and generates a dubbed track (or subtitles) — no cloud APIs, no inference sent off-device. Only the download stage needs the network.
 
 ## What it does
@@ -87,4 +92,12 @@ video_translator/
 
 ## License
 
-_Add your license here._
+MIT — Copyright (c) 2026 Ilya Ashirov. See [`LICENSE`](LICENSE).
+
+Model weights are **not** covered by this license and are downloaded at runtime:
+
+- **NLLB-200** (`facebook/nllb-200-distilled-600M`) — CC-BY-NC-4.0, **non-commercial only**. Upstream states it is "a research model and is not released for production deployment."
+- **Whisper** — MIT (OpenAI).
+- **Piper voices** — vary per voice; check the source of each voice before redistributing.
+
+Commercial use requires swapping NLLB for a permissively licensed translation model.
