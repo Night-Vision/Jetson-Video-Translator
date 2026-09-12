@@ -13,7 +13,7 @@ from video_translator.pipeline.transcriber import Transcriber
 from video_translator.pipeline.translator import Translator
 from video_translator.pipeline.dubber import AudioDubber
 from video_translator.pipeline.writer import SubtitleWriter
-from video_translator.utils.memory_monitor import log_memory, log_vram
+from video_translator.utils.memory_monitor import log_memory, log_oc, log_vram
 
 logger = logging.getLogger("video_translator")
 
@@ -147,18 +147,23 @@ def main() -> None:
     _remove_paths(_ramdisk_paths(config))
 
     try:
+        log_oc("baseline", config)
         if not downloader.download(args.url):
             logger.error("Download failed, aborting.")
             sys.exit(1)
+        log_oc("post-download", config)
 
         extractor.extract()
         log_memory("post-extract", config)
         log_vram("post-extract", config)
+        log_oc("post-extract", config)
 
-        segments   = transcriber.transcribe()
+        segments = transcriber.transcribe()
+        log_oc("post-transcribe", config)
         translated = translator.translate_segments(segments)
         log_memory("post-translate", config)
         log_vram("post-translate", config)
+        log_oc("post-translate", config)
 
         if config.output_format == "dubbed":
             produced = AudioDubber(config).dub(translated)
@@ -167,6 +172,7 @@ def main() -> None:
 
         log_memory("post-output", config)
         log_vram("post-output", config)
+        log_oc("post-output", config)
 
         if not produced:
             logger.warning("No speech or dubbable segments — no output file produced.")

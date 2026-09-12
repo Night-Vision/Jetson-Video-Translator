@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import glob
 import logging
+import os
+
 import psutil
 
 from typing import TYPE_CHECKING
@@ -54,4 +57,53 @@ def check_memory(min_free_gb: float, label: str = "") -> None:
         raise MemoryError(
             f"Insufficient free RAM{ctx}: "
             f"{avail_gb:.1f} GB available, {min_free_gb} GB required."
+        )
+
+
+# Jetson SoC overcurrent event counters.  These are cumulative since boot and
+# carry no timestamp, so the only way to attribute an event to a pipeline stage
+# is to sample them at each stage boundary and report the delta.  Overcurrent
+# is a power-rail alarm, unrelated to the thermal trip points -- it can fire on
+# a cold board when CPU and GPU load spike together under an uncapped nvpmodel
+# profile.
+_OC_COUNTERS = sorted(glob.glob("/sys/class/hwmon/hwmon*/oc*_event_cnt"))
+_oc_previous: dict[str, int] = {}
+
+
+def _read_oc_counters() -> dict[str, int]:
+    counts = {}
+    for path in _OC_COUNTERS:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                counts[os.path.basename(path)] = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+    return counts
+
+
+def log_oc(label: str, config: Config | None = None) -> None:
+    """Report SoC overcurrent events that fired since the previous call.
+
+    The first call establishes the baseline.  Increments are logged at WARNING
+    regardless of debug mode -- an overcurrent event means the board throttled,
+    which is worth surfacing on every run.
+    """
+    current = _read_oc_counters()
+    if not current:
+        return
+
+    for rail, count in current.items():
+        before = _oc_previous.get(rail)
+        if before is not None and count > before:
+            logger.warning(
+                "[OC] %s: %s fired %d time(s) during this stage (total %d) "
+                "— board throttled on an overcurrent alarm",
+                label, rail, count - before, count,
+            )
+    _oc_previous.update(current)
+
+    if config is not None and config.debug:
+        logger.debug(
+            "[OC] %s: %s", label,
+            ", ".join(f"{r}={c}" for r, c in sorted(current.items())),
         )

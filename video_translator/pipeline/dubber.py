@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from ..utils.audio_utils import estimate_gender, speech_bounds
+from ..utils.memory_monitor import log_oc
 
 if TYPE_CHECKING:
     from ..config import Config
@@ -144,15 +145,19 @@ class AudioDubber:
         video_duration = self._get_video_duration()
         self._resolve_overlaps(segments, video_duration)
         self._assign_genders(segments)
+        log_oc("dub:post-gender", self.config)
         self._run_tts_for_all_genders(segments)
+        log_oc("dub:post-tts", self.config)
 
         sample_rate = self._get_video_audio_rate() or self._get_model_sample_rate()
 
         dub_track = self._mix_segments_to_track(segments, sample_rate, video_duration)
+        log_oc("dub:post-mix", self.config)
         if dub_track is None:
             return False
         try:
             self._mux_final_video(segments, dub_track)
+            log_oc("dub:post-mux", self.config)
         finally:
             self._cleanup_dub_track(dub_track)
         return True
