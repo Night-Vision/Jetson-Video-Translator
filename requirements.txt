@@ -3,14 +3,17 @@
 # automatically by pip and should NOT be pinned in this file.
 
 faster-whisper==1.2.1
-requests==2.34.2
 psutil==7.2.2
 numpy==2.2.6
-nvidia-ml-py==12.560.30
 
 # === faster-whisper indirect deps not auto-resolved on aarch64 ==============
 huggingface_hub==1.14.0   # model download from HuggingFace Hub
 tokenizers==0.22.2        # HF tokenizer used by faster-whisper
+
+# === NLLB translation ======================================================
+# AutoTokenizer (models/nllb_model.py) and ctranslate2's TransformersConverter
+# both require it; CTranslate2 documents NLLB conversion as needing >=4.21.0.
+transformers==5.12.0
 
 # === External tools (NOT venv-installed; invoked from PATH) ================
 # yt-dlp runs as a system tool via subprocess (pipeline/downloader.py), like

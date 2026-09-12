@@ -13,7 +13,7 @@ from video_translator.pipeline.transcriber import Transcriber
 from video_translator.pipeline.translator import Translator
 from video_translator.pipeline.dubber import AudioDubber
 from video_translator.pipeline.writer import SubtitleWriter
-from video_translator.utils.memory_monitor import log_memory, log_oc, log_vram
+from video_translator.utils.memory_monitor import log_memory, log_oc
 
 logger = logging.getLogger("video_translator")
 
@@ -154,7 +154,6 @@ def main() -> None:
 
         extractor.extract()
         log_memory("post-extract", config)
-        log_vram("post-extract", config)
         log_oc("post-extract", config)
 
         # Both stages are generator functions, so calling them runs nothing --
@@ -163,14 +162,12 @@ def main() -> None:
         # the work lands inside AudioDubber.dub()'s list(segment_iter) instead.
         segments = list(transcriber.transcribe())
         log_memory("post-transcribe", config)
-        log_vram("post-transcribe", config)
         log_oc("post-transcribe", config)
 
         # iter() is required: translate_segments re-islices its argument each
         # batch, and islice on a list restarts at 0 -- an infinite loop.
         translated = list(translator.translate_segments(iter(segments)))
         log_memory("post-translate", config)
-        log_vram("post-translate", config)
         log_oc("post-translate", config)
 
         if config.output_format == "dubbed":
@@ -179,7 +176,6 @@ def main() -> None:
             produced = SubtitleWriter(config).write(translated)
 
         log_memory("post-output", config)
-        log_vram("post-output", config)
         log_oc("post-output", config)
 
         if not produced:

@@ -37,7 +37,6 @@ class NLLBModel(BaseModel):
         logger.info("Conversion complete.")
 
     def _load(self) -> None:
-        self._check_vram_headroom()
         self._convert_model()
         logger.info("Loading CTranslate2 model from %s", self._ct2_model_path)
         self._translator = ctranslate2.Translator(
@@ -89,18 +88,3 @@ class NLLBModel(BaseModel):
             
         return translations
 
-    def _check_vram_headroom(self) -> None:
-        try:
-            import pynvml  # noqa: PLC0415
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            free_gb = info.free / 1024 ** 3
-            if free_gb < 1.0:
-                raise MemoryError(
-                    f"Insufficient VRAM: {free_gb:.1f} GB free, require at least 1GB."
-                )
-        except MemoryError:
-            raise
-        except Exception:
-            pass

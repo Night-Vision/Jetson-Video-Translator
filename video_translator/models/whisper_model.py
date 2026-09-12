@@ -8,23 +8,13 @@ from .base import BaseModel
 class WhisperModel(BaseModel):
     """Wraps faster-whisper with a RAM guard and an explicit load/unload lifecycle.
 
-    Supports two backends:
-      - "faster_whisper" (default): CTranslate2 INT8 via the faster-whisper package.
-      - "whisper_trt" (experimental): TensorRT engine via the whisper_trt package.
-
     torch and faster_whisper are intentionally NOT imported at module level.
     Keeping heavy CUDA imports inside _load() prevents GPU context contamination
     in the parent process — the transcriber runs Whisper in a child subprocess
     precisely so the CUDA context is fully released when inference is done.
     """
 
-    def __init__(
-        self,
-        model_size: str,
-        min_free_ram_gb: float,
-        backend: str = "faster_whisper",
-        engine_dir: str = "",
-    ) -> None:
+    def __init__(self, model_size: str, min_free_ram_gb: float) -> None:
         self.model_size = model_size
         self.min_free_ram_gb = min_free_ram_gb
         self._model = None

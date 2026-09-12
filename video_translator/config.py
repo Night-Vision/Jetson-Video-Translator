@@ -8,7 +8,6 @@ from dataclasses import dataclass
 class Config:
     # ── Pipeline behaviour ──────────────────────────────────────────────────
     target_lang: str = "Russian"
-    platform: str = "short-form video"
     debug: bool = False
     # Output mode: "dubbed" | "srt" | "vtt" | "json"
     output_format: str = "dubbed"
@@ -26,9 +25,9 @@ class Config:
     tmp_video: str = "/dev/shm/input_vid.mp4"
     tmp_audio: str = "/dev/shm/raw_audio.wav"
     tmp_segments: str = "/dev/shm/segments.json"
-    output_video: str = "final_dubbed.mp4"
-    # Base name for subtitle files; extension appended from output_format
-    output_subtitles: str = "subtitles"
+    # Both are resolved to outputs/<name>_NNN by __post_init__; never used as-is.
+    output_video: str = ""
+    output_subtitles: str = ""
 
     # ── Runtime-resolved paths (populated by __post_init__ if left empty) ───
     piper_bin: str = ""

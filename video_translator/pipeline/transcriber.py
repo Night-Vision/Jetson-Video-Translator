@@ -4,7 +4,7 @@ Design note — subprocess isolation
 -----------------------------------
 Whisper (via CTranslate2) allocates a CUDA context that cannot be cleanly
 released inside the same process.  To guarantee that 100% of VRAM is returned
-to the OS before the vLLM container starts, transcription is run inside a
+to the OS before the translator loads, transcription is run inside a
 fresh child process.  When the subprocess exits, the OS reclaims its CUDA
 context automatically.
 
