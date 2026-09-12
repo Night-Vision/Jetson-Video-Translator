@@ -88,7 +88,7 @@ video_translator/
 - Only Russian ships distinct male/female Piper voices, and only the Russian voices are checked into `models/`; other languages reuse one voice for both genders until more Piper models are added.
 - TTS can only speed up to fit a time slot (`--max-tempo`), never slow down — segments that finish early just end early.
 - Silent/unvocalizable TTS segments are dropped; original audio is kept in that window instead of a dub.
-- The SoC overcurrent counter (`/sys/class/hwmon/hwmon*/oc3_event_cnt`) occasionally increments mid-run on the uncapped `MAXN_SUPER` power profile. `--debug` reports which stage it fired in. Cause not yet identified; `sudo nvpmodel -m 1` caps power if it becomes a problem.
+- The SoC overcurrent counter (`/sys/class/hwmon/hwmon*/oc3_event_cnt`) occasionally increments mid-run on the uncapped `MAXN_SUPER` power profile. `oc3` is Orin's *instantaneous* overcurrent alarm on `VDD_IN` (limit `curr1_crit` = 5040 mA ≈ 25.2 W); it trips on how fast current rises, not how much is drawn — a stage boundary such as Whisper's CUDA cold start ramps CPU, GPU and memory together in a few ms. Average draw (`oc2`) and supply voltage (`oc1`) never alarm. The firmware answers with a microsecond clock clamp, so it is harmless. `--debug` reports which stage it fired in; `sudo nvpmodel -m 1` (25 W) restores the clock ceilings that prevent it.
 
 ## License
 

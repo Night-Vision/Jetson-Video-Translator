@@ -60,12 +60,24 @@ def check_memory(min_free_gb: float, label: str = "") -> None:
         )
 
 
-# Jetson SoC overcurrent event counters.  These are cumulative since boot and
-# carry no timestamp, so the only way to attribute an event to a pipeline stage
-# is to sample them at each stage boundary and report the delta.  Overcurrent
-# is a power-rail alarm, unrelated to the thermal trip points -- it can fire on
-# a cold board when CPU and GPU load spike together under an uncapped nvpmodel
-# profile.
+# Jetson SoC overcurrent event counters.  Cumulative since boot and carrying no
+# timestamp, so the only way to attribute an event to a stage is to sample them
+# at each boundary and report the delta -- the kernel logs nothing at all (per
+# NVIDIA: "the host OS is not informed of these events").
+#
+# Orin exposes three alarms: oc1 = under-voltage, oc2 = average overcurrent,
+# oc3 = *instantaneous* overcurrent on VDD_IN.  The threshold is readable at
+# /sys/class/hwmon/hwmon*/curr1_crit -- 5040 mA @ 5 V, i.e. 25.2 W.
+#
+# oc3 is the one this pipeline trips, and it is an edge detector: it fires on
+# how fast current rises, not how much is drawn.  A steady-state GPU load can
+# therefore sit near the budget for minutes without alarming, while a stage
+# boundary that ramps CPU + GPU + EMC together from idle (Whisper's CUDA cold
+# start is the sharpest) sets it off.  The MAXN_SUPER nvpmodel profile uncaps
+# every clock ceiling (-1 for CPU/GPU/EMC) and is what lets those ramps reach
+# the threshold; `nvpmodel -m 1` (25 W) restores the caps.  The firmware
+# response is a microsecond clock clamp, not an error -- nothing is damaged and
+# nothing fails, it just costs a little clock.
 _OC_COUNTERS = sorted(glob.glob("/sys/class/hwmon/hwmon*/oc*_event_cnt"))
 _oc_previous: dict[str, int] = {}
 
@@ -85,8 +97,8 @@ def log_oc(label: str, config: Config | None = None) -> None:
     """Report SoC overcurrent events that fired since the previous call.
 
     The first call establishes the baseline.  Increments are logged at WARNING
-    regardless of debug mode -- an overcurrent event means the board throttled,
-    which is worth surfacing on every run.
+    regardless of debug mode -- the clamp is harmless, but it costs clock and
+    these counters are the only place it is ever visible.
     """
     current = _read_oc_counters()
     if not current:
@@ -97,7 +109,8 @@ def log_oc(label: str, config: Config | None = None) -> None:
         if before is not None and count > before:
             logger.warning(
                 "[OC] %s: %s fired %d time(s) during this stage (total %d) "
-                "— board throttled on an overcurrent alarm",
+                "— firmware clamped clocks on a current transient; run "
+                "`nvpmodel -m 1` to cap peak draw if this happens often",
                 label, rail, count - before, count,
             )
     _oc_previous.update(current)
