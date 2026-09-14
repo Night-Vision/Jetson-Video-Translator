@@ -1,4 +1,2 @@
-from .memory_monitor import log_memory
-from .audio_utils import estimate_gender, speech_bounds
-
-__all__ = ["log_memory", "estimate_gender", "speech_bounds"]
+# Intentionally empty. Helpers are imported from their own modules by callers
+# (utils.memory_monitor, utils.audio_utils); nothing imported them from here.

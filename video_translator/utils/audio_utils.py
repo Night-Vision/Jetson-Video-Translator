@@ -8,6 +8,16 @@ import numpy as np
 logger = logging.getLogger("video_translator.audio_utils")
 
 
+def _decode(data: bytes, sampwidth: int) -> np.ndarray:
+    """PCM bytes -> int16 samples.  8-bit WAVs are unsigned, so recentre them.
+
+    Scaled to the int16 range either way, so callers divide by one constant.
+    """
+    if sampwidth == 2:
+        return np.frombuffer(data, dtype=np.int16)
+    return (np.frombuffer(data, dtype=np.uint8).astype(np.int16) - 128) * 256
+
+
 def speech_bounds(file_path: str, threshold_db: float = -45.0) -> tuple[float, float] | None:
     """Return (start, end) seconds of the non-silent span of a WAV, or None.
 
@@ -20,13 +30,9 @@ def speech_bounds(file_path: str, threshold_db: float = -45.0) -> tuple[float, f
     """
     with wave.open(file_path, "rb") as wf:
         framerate = wf.getframerate()
-        sampwidth = wf.getsampwidth()
-        data = wf.readframes(wf.getnframes())
+        signal = _decode(wf.readframes(wf.getnframes()), wf.getsampwidth())
 
-    if sampwidth == 2:
-        signal = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-    else:
-        signal = (np.frombuffer(data, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    signal = signal.astype(np.float32) / 32768.0
 
     if signal.size == 0:
         return None
@@ -88,13 +94,7 @@ def _read_segment(
         wf.setpos(int(start_time * framerate))
         data = wf.readframes(n_frames)
 
-    if sampwidth == 2:
-        signal = np.frombuffer(data, dtype=np.int16)
-    else:
-        # Convert 8-bit unsigned to signed int16
-        signal = np.frombuffer(data, dtype=np.uint8).astype(np.int16) - 128
-
-    return signal, framerate
+    return _decode(data, sampwidth), framerate
 
 
 def _estimate_pitches(signal: np.ndarray, framerate: int) -> list[float]:

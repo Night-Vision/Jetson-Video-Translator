@@ -22,14 +22,23 @@ logger = logging.getLogger("video_translator.dubber")
 # (ru_RU-irina-medium.onnx / ru_RU-dmitri-medium.onnx).  English, Spanish,
 # French, and German reuse a single voice for both genders — the female/male
 # keys are aliases — until additional Piper voices are added to models/.
-_TTS_MODELS: dict[str, dict[str, str]] = {
-    "English": {"female": "en_US-lessac-medium.onnx",   "male": "en_US-lessac-medium.onnx"},
-    "Russian": {"female": "ru_RU-irina-medium.onnx",    "male": "ru_RU-dmitri-medium.onnx"},
-    "Spanish": {"female": "es_ES-sharvard-medium.onnx", "male": "es_ES-sharvard-medium.onnx"},
-    "French":  {"female": "fr_FR-upmc-medium.onnx",     "male": "fr_FR-upmc-medium.onnx"},
-    "German":  {"female": "de_DE-thorsten-medium.onnx", "male": "de_DE-thorsten-medium.onnx"},
+# A single filename means that language uses one voice for both genders.
+_TTS_MODELS: dict[str, str | dict[str, str]] = {
+    "English": "en_US-lessac-medium.onnx",
+    "Russian": {"female": "ru_RU-irina-medium.onnx", "male": "ru_RU-dmitri-medium.onnx"},
+    "Spanish": "es_ES-sharvard-medium.onnx",
+    "French":  "fr_FR-upmc-medium.onnx",
+    "German":  "de_DE-thorsten-medium.onnx",
 }
-_DEFAULT_MODELS = {"female": "en_US-lessac-medium.onnx", "male": "en_US-lessac-medium.onnx"}
+_DEFAULT_MODEL = "en_US-lessac-medium.onnx"
+
+
+def _voice_for(lang: str, gender: str) -> str:
+    """Piper voice filename for a language/gender, falling back to English."""
+    entry = _TTS_MODELS.get(lang, _DEFAULT_MODEL)
+    if isinstance(entry, str):
+        return entry
+    return entry.get(gender, _DEFAULT_MODEL)
 
 
 def _duck_end(seg: Segment, padding: float) -> float:
@@ -60,8 +69,7 @@ class AudioDubber:
 
     def _get_model_sample_rate(self) -> int:
         """Resolve sample rate from target model config JSON; defaults to 22050 Hz."""
-        lang_models = _TTS_MODELS.get(self.config.target_lang, _DEFAULT_MODELS)
-        female_model = lang_models.get("female", _DEFAULT_MODELS["female"])
+        female_model = _voice_for(self.config.target_lang, "female")
         model_path_candidate = os.path.join(self.config.tts_models_dir, female_model)
         model_path = model_path_candidate if os.path.exists(model_path_candidate) else female_model
 
@@ -180,7 +188,10 @@ class AudioDubber:
             self._mux_final_video(segments, dub_track)
             log_oc("dub:post-mux", self.config)
         finally:
-            self._cleanup_dub_track(dub_track)
+            try:
+                os.remove(dub_track)
+            except OSError:
+                pass
         return True
 
     # ── Step helpers ─────────────────────────────────────────────────────────
@@ -236,8 +247,7 @@ class AudioDubber:
         if not group:
             return
 
-        lang_models = _TTS_MODELS.get(self.config.target_lang, _DEFAULT_MODELS)
-        model_name = lang_models.get(gender, _DEFAULT_MODELS[gender])
+        model_name = _voice_for(self.config.target_lang, gender)
         model_path_candidate = os.path.join(self.config.tts_models_dir, model_name)
         if not os.path.exists(model_path_candidate):
             logger.warning(
@@ -290,17 +300,13 @@ class AudioDubber:
         if video_duration <= 0.0:
             raise RuntimeError("Could not determine video duration — aborting dubbing")
 
-        # ── Silent base track anchors the output to exact video duration ──
-        silent_base = "/dev/shm/silent_base.wav"
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi",
+        # ── Silent base anchors the output to exact video duration ──
+        # lavfi is an input device, so anullsrc feeds the graph directly as
+        # [0:a]; `-t` before `-i` bounds it.  No temp file, no second ffmpeg.
+        dub_inputs: list[str] = [
+            "-f", "lavfi", "-t", f"{video_duration:.4f}",
             "-i", f"anullsrc=r={sample_rate}:cl=stereo",
-            "-t", str(video_duration),
-            "-acodec", "pcm_s16le", "-ar", str(sample_rate),
-            silent_base,
-        ], check=True, capture_output=True)
-
-        dub_inputs: list[str] = ["-i", silent_base]   # [0:a] is the silent anchor
+        ]
         filter_parts: list[str] = []
         kept: list[Segment] = []
         kept_idx: list[int] = []
@@ -337,7 +343,8 @@ class AudioDubber:
                 f"atrim=start={speech_start:.4f}:end={speech_end:.4f},asetpts=N/SR/TB,"
             )
 
-            input_idx = len(dub_inputs) // 2   # silent_base is input 0
+            # -i count, not token count: the lavfi anchor spends 6 tokens.
+            input_idx = dub_inputs.count("-i")
             dub_inputs.extend(["-i", out_file])
             kept.append(seg)
             kept_idx.append(i)
@@ -417,10 +424,6 @@ class AudioDubber:
                     os.remove(f"/dev/shm/seg_{i}.wav")
                 except OSError:
                     pass
-            try:
-                os.remove(silent_base)
-            except OSError:
-                pass
 
         return dub_track
 
@@ -515,12 +518,6 @@ class AudioDubber:
             filters.append(f"atempo={r:.3f}")
         return ",".join(filters), actual / capped
 
-    @staticmethod
-    def _cleanup_dub_track(dub_track: str) -> None:
-        try:
-            os.remove(dub_track)
-        except OSError:
-            pass
 
 
 def _self_check() -> None:
@@ -547,6 +544,12 @@ def _self_check() -> None:
 
     # Empty payload (the ffprobe-failed path) falls back across the board.
     assert parse({})["duration"] == 0.0
+
+    # _voice_for: str entry = one voice for both genders, dict = per-gender.
+    assert _voice_for("Russian", "male") == "ru_RU-dmitri-medium.onnx"
+    assert _voice_for("Russian", "female") == "ru_RU-irina-medium.onnx"
+    assert _voice_for("French", "male") == _voice_for("French", "female")
+    assert _voice_for("Klingon", "male") == _DEFAULT_MODEL
 
     print("dubber self-check OK")
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import gc
+
 import psutil
 
-from .base import BaseModel
 
+class WhisperModel:
+    """Wraps faster-whisper with a RAM guard, as a context manager.
 
-class WhisperModel(BaseModel):
-    """Wraps faster-whisper with a RAM guard and an explicit load/unload lifecycle.
+    Use as ``with WhisperModel(size, min_ram) as model:`` -- __exit__ unloads
+    and runs gc.collect() even when the body raises.
 
     torch and faster_whisper are intentionally NOT imported at module level.
     Keeping heavy CUDA imports inside _load() prevents GPU context contamination
@@ -18,6 +21,14 @@ class WhisperModel(BaseModel):
         self.model_size = model_size
         self.min_free_ram_gb = min_free_ram_gb
         self._model = None
+
+    def __enter__(self) -> WhisperModel:
+        self._load()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._unload()
+        gc.collect()
 
     def _load(self) -> None:
         available_gb = psutil.virtual_memory().available / 1024 ** 3
@@ -55,7 +66,7 @@ class WhisperModel(BaseModel):
         """
         if self._model is None:
             raise RuntimeError(
-                "WhisperModel.transcribe() called outside a lifecycle() context."
+                "WhisperModel.transcribe() called outside a `with` block."
             )
         return self._model.transcribe(
             audio_path,

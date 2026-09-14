@@ -69,7 +69,6 @@ def _ramdisk_paths(config: Config) -> list[str]:
         config.tmp_audio,
         config.tmp_segments,
         "/dev/shm/dub_track_main.wav",
-        "/dev/shm/silent_base.wav",
     ]
     # yt-dlp per-stream temp files + in-progress fragments for this video
     paths.extend(glob.glob(os.path.join(shm_dir, f"{prefix}.f*")))
@@ -118,19 +117,13 @@ def main() -> None:
         output_format=args.format,
         debug=args.debug,
     )
+    # An explicit --bg-volume wins; otherwise --enable-ducking implies 0.15.
+    # Either way bg_volume > 0.0 is exactly what "ducking is on" means.
     if args.bg_volume is not None:
-        if args.bg_volume > 0.0:
-            config.enable_ducking = True
-            config.bg_volume = args.bg_volume
-        else:
-            config.enable_ducking = False
-            config.bg_volume = 0.0
-    elif args.enable_ducking:
-        config.enable_ducking = True
-        config.bg_volume = 0.15
+        config.bg_volume = max(0.0, args.bg_volume)
     else:
-        config.enable_ducking = False
-        config.bg_volume = 0.0
+        config.bg_volume = 0.15 if args.enable_ducking else 0.0
+    config.enable_ducking = config.bg_volume > 0.0
 
     if args.audio_offset is not None:
         config.audio_offset = args.audio_offset

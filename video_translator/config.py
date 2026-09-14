@@ -83,14 +83,16 @@ class Config:
         outputs_dir = os.path.join(project_root, "outputs")
         os.makedirs(outputs_dir, exist_ok=True)
         
+        # One listing, not one per candidate slot.  Advance past both video and
+        # subtitle slots so repeated subtitle-only runs don't overwrite the
+        # previous subtitles_NNN file.
+        existing = set(os.listdir(outputs_dir))
         i = 1
         while True:
             video_path = os.path.join(outputs_dir, f"dubbed_{i:03d}.mp4")
-            # Advance past both video and subtitle slots, so repeated
-            # subtitle-only runs don't overwrite the previous subtitles_NNN file.
             sub_base = f"subtitles_{i:03d}."
-            slot_free = not os.path.exists(video_path) and not any(
-                name.startswith(sub_base) for name in os.listdir(outputs_dir)
+            slot_free = f"dubbed_{i:03d}.mp4" not in existing and not any(
+                name.startswith(sub_base) for name in existing
             )
             if slot_free:
                 self.output_video = video_path

@@ -104,7 +104,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     whisper = WhisperModel(args.model, args.min_ram)
-    with whisper.lifecycle():
+    with whisper:
         segments_iter, info = whisper.transcribe(
             args.audio,
             vad_filter=args.vad,

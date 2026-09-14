@@ -52,8 +52,8 @@ class SubtitleWriter:
     def _write_srt(self, segments: list[Segment], path: str) -> None:
         lines: list[str] = []
         for idx, seg in enumerate(segments, start=1):
-            start = self._srt_timestamp(seg.start_time)
-            end   = self._srt_timestamp(seg.end_time)
+            start = self._timestamp(seg.start_time, ",")
+            end   = self._timestamp(seg.end_time, ",")
             lines.append(f"{idx}\n{start} --> {end}\n{seg.translated_text}\n")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
@@ -61,8 +61,8 @@ class SubtitleWriter:
     def _write_vtt(self, segments: list[Segment], path: str) -> None:
         lines: list[str] = ["WEBVTT", ""]
         for seg in segments:
-            start = self._vtt_timestamp(seg.start_time)
-            end   = self._vtt_timestamp(seg.end_time)
+            start = self._timestamp(seg.start_time, ".")
+            end   = self._timestamp(seg.end_time, ".")
             lines.append(f"{start} --> {end}\n{seg.translated_text}\n")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(lines))
@@ -85,17 +85,9 @@ class SubtitleWriter:
     # ── Timestamp formatters ─────────────────────────────────────────────────
 
     @staticmethod
-    def _srt_timestamp(seconds: float) -> str:
-        """Format seconds as HH:MM:SS,mmm (SubRip)."""
+    def _timestamp(seconds: float, sep: str) -> str:
+        """Format seconds as HH:MM:SS<sep>mmm — ',' for SubRip, '.' for WebVTT."""
         h, rem = divmod(int(seconds), 3600)
         m, s   = divmod(rem, 60)
         ms     = int((seconds % 1) * 1000)
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-
-    @staticmethod
-    def _vtt_timestamp(seconds: float) -> str:
-        """Format seconds as HH:MM:SS.mmm (WebVTT)."""
-        h, rem = divmod(int(seconds), 3600)
-        m, s   = divmod(rem, 60)
-        ms     = int((seconds % 1) * 1000)
-        return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+        return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"

@@ -29,7 +29,7 @@ class Translator:
         if not first_chunk:
             return
 
-        with self._llm.lifecycle():
+        with self._llm:
             yield from self._process_all_chunks(first_chunk, segment_iter)
 
     # ── Private: chunk processing ────────────────────────────────────────────
@@ -69,8 +69,21 @@ def _self_check() -> None:
     translate_segments() re-islices its argument on every batch, so it needs a
     true iterator: islice on a list restarts at index 0 and loops forever.
     """
-    import contextlib
     from types import SimpleNamespace
+
+    class _StubLLM:
+        """`with` resolves __enter__/__exit__ on the type, so SimpleNamespace
+        cannot stand in for a context-managed model."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        @staticmethod
+        def translate_batch(texts, prefix):
+            return [f"ru:{t}" for t in texts]
 
     n, batch = 7, 3
     segments = [SimpleNamespace(text=f"s{i}", translated_text=None) for i in range(n)]
@@ -81,10 +94,7 @@ def _self_check() -> None:
         target_lang="Russian",
         lang_mappings={"Russian": "rus_Cyrl"},
     )
-    translator._llm = SimpleNamespace(
-        lifecycle=contextlib.nullcontext,
-        translate_batch=lambda texts, prefix: [f"ru:{t}" for t in texts],
-    )
+    translator._llm = _StubLLM()
 
     out = list(translator.translate_segments(iter(segments)))
     assert len(out) == n, f"expected {n} segments, got {len(out)}"

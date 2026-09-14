@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from typing import TYPE_CHECKING, List
@@ -7,21 +8,27 @@ from typing import TYPE_CHECKING, List
 import ctranslate2
 from transformers import AutoTokenizer
 
-from .base import BaseModel
-
 if TYPE_CHECKING:
     from ..config import Config
 
 logger = logging.getLogger("video_translator.nllb_model")
 
-class NLLBModel(BaseModel):
-    """NLLB translation model via CTranslate2."""
+class NLLBModel:
+    """NLLB translation model via CTranslate2; use as a context manager."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self._translator = None
         self._tokenizer = None
         self._ct2_model_path = os.path.join(self.config.nllb_cache_dir, "ct2_model")
+
+    def __enter__(self) -> NLLBModel:
+        self._load()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._unload()
+        gc.collect()
 
     def _convert_model(self) -> None:
         if os.path.exists(self._ct2_model_path) and os.listdir(self._ct2_model_path):
